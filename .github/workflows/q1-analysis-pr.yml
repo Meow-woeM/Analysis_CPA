@@ -1,0 +1,102 @@
+name: Q1 CPA Intent vs Program Value Analysis
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  analyze:
+    name: Run Q1 Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Q1 analysis
+        env:
+          DATA_PATH: data/Grad Program Exit Survey Data 2024.xlsx
+        run: python scripts/q1_cpa_intent_vs_program_value.py
+
+      - name: Upload analysis artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: q1-analysis-report
+          path: |
+            reports/q1_report.md
+            reports/q1_plot.png
+            reports/q1_summary.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Post PR comment with summary
+        if: success() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+
+            // Read the JSON summary produced by the analysis script
+            let summary;
+            try {
+              const raw = fs.readFileSync('reports/q1_summary.json', 'utf8');
+              summary = JSON.parse(raw);
+            } catch (e) {
+              console.log('Could not read summary JSON:', e.message);
+              return;
+            }
+
+            const body = [
+              '## Q1 Analysis: CPA Intent (Q8) vs. MAcc Program Worth It (Q53)',
+              '',
+              '| Metric | Value |',
+              '| --- | --- |',
+              `| N (after filtering) | ${summary.n_final} |`,
+              `| Chi-square (χ²) | ${summary.chi2} (dof=${summary.dof}) |`,
+              `| p-value | ${summary.p_value} — ${summary.significance} |`,
+              `| Cramér\'s V | ${summary.cramers_v} — ${summary.effect_size} effect |`,
+              '',
+              '> Full report and stacked bar chart are available in the **Actions artifacts** for this run.',
+            ].join('\n');
+
+            // Find and update existing bot comment, or create a new one
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(
+              c => c.user.type === 'Bot' && c.body.includes('Q1 Analysis: CPA Intent')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
